@@ -41,6 +41,26 @@ public class CardOcrParserTest {
     }
 
     @Test
+    public void slowpokeMepPromoRejectsBasigAndKeepsSetCode() {
+        String ocr = "BASIG\nSlowpoke\nHP 80\nNO. 0079 Dopey Pokemon\nAbility Dopey Face\nSuper Psy Bolt 50\nJ MEP EN 086";
+        CardOcrParser.Result r = CardOcrParser.parse(ocr);
+        assertEquals("Slowpoke", r.name);
+        assertEquals("MEP 086", r.collectorNumber);
+        assertEquals("Slowpoke MEP 086", r.query);
+        assertTrue(r.grader.isEmpty());
+        assertTrue(r.grade.isEmpty());
+    }
+
+    @Test
+    public void rawPromoDoesNotUseAttackDamageAsSlabCardNumber() {
+        String ocr = "BASIC\nSlowpoke\nHP 80\n50 Super Psy Bolt\nMEP EN 086";
+        CardOcrParser.Result r = CardOcrParser.parse(ocr);
+        assertEquals("Slowpoke", r.name);
+        assertEquals("MEP 086", r.collectorNumber);
+        assertEquals("Slowpoke MEP 086", r.query);
+    }
+
+    @Test
     public void beckettAudinoLabelIsRecognizedFromSubgradesAndLabelRow() {
         String ocr = "2016 XY FATES COLLIDE\n#84 AUDINO EX HOLO R\n9\nMINT\n0019902509\nCENTERING 9 CORNERS 9\nEDGES 9 SURFACE 9";
         CardOcrParser.Result r = CardOcrParser.parse(ocr);
