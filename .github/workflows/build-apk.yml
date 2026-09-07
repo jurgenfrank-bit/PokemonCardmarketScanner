@@ -25,6 +25,9 @@ jobs:
         with:
           gradle-version: '8.9'
 
+      - name: Apply v0.6 confirmation flow
+        run: python3 scripts/apply_v06_confirm_flow.py
+
       - name: Test OCR parser
         run: gradle --no-daemon testDebugUnitTest
 
