@@ -44,9 +44,10 @@ import java.util.Locale;
 
 public class MainActivity extends AppCompatActivity {
     private static final String CARDMARKET_HOME = "https://www.cardmarket.com/en/Pokemon";
+    private static final String CARDMARKET_SEARCH = "https://www.cardmarket.com/en/Pokemon/Products/Search?searchString=";
 
     private ImageView imagePreview;
-    private EditText editSearch;
+    private EditText editSearch, editGrader, editGrade;
     private TextView txtStatus, txtSlab, txtResult, txtWebStatus;
     private ScrollView mainScroll;
     private LinearLayout webContainer;
@@ -54,7 +55,6 @@ public class MainActivity extends AppCompatActivity {
     private Uri pendingCameraUri;
     private CardOcrParser.Result lastOcr;
     private String pendingSearch = null;
-    private boolean submittedSearch = false;
     private boolean autoOpenedProduct = false;
     private final Handler handler = new Handler(Looper.getMainLooper());
 
@@ -75,6 +75,8 @@ public class MainActivity extends AppCompatActivity {
 
         imagePreview = findViewById(R.id.imagePreview);
         editSearch = findViewById(R.id.editSearch);
+        editGrader = findViewById(R.id.editGrader);
+        editGrade = findViewById(R.id.editGrade);
         txtStatus = findViewById(R.id.txtStatus);
         txtSlab = findViewById(R.id.txtSlab);
         txtResult = findViewById(R.id.txtResult);
@@ -116,6 +118,11 @@ public class MainActivity extends AppCompatActivity {
     private void showImageAndOcr(Uri uri) {
         imagePreview.setImageURI(uri);
         txtStatus.setText("Tekst op kaart/slab herkennen…");
+        editSearch.setText("");
+        editGrader.setText("");
+        editGrade.setText("");
+        txtSlab.setText("Slab: herkennen…");
+
         try {
             InputImage image = InputImage.fromFilePath(this, uri);
             TextRecognizer recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
@@ -123,16 +130,24 @@ public class MainActivity extends AppCompatActivity {
                     .addOnSuccessListener(result -> {
                         lastOcr = CardOcrParser.parse(result.getText());
                         editSearch.setText(lastOcr.query);
+                        editGrader.setText(lastOcr.grader);
+                        editGrade.setText(lastOcr.grade);
+
                         if (!lastOcr.grader.isEmpty()) {
-                            String slab = lastOcr.grader + (lastOcr.grade.isEmpty() ? "" : " " + lastOcr.grade);
-                            txtSlab.setText("Slab: " + slab);
+                            txtSlab.setText("Slab: " + lastOcr.grader + (lastOcr.grade.isEmpty() ? "" : " " + lastOcr.grade));
+                        } else if (!lastOcr.grade.isEmpty()) {
+                            txtSlab.setText("Slab: grade " + lastOcr.grade + " herkend, merk niet zeker");
                         } else {
                             txtSlab.setText("Slab: raw / geen grader herkend");
                         }
+
                         if (lastOcr.query.isEmpty()) {
-                            txtStatus.setText("OCR voltooid, maar kaartnaam/nummer niet zeker. Vul de zoekterm handmatig aan.");
+                            txtStatus.setText("Kaartnaam niet betrouwbaar herkend. Vul naam + kaartnummer in; grading kun je eronder corrigeren.");
+                        } else if (lastOcr.name.equalsIgnoreCase("Mint") || lastOcr.name.toUpperCase(Locale.ROOT).contains("GEM MINT")) {
+                            editSearch.setText("");
+                            txtStatus.setText("Gradingtekst is genegeerd als kaartnaam. Vul de kaartnaam handmatig in.");
                         } else {
-                            txtStatus.setText("Herkenning klaar. Controleer de zoekterm en tik op ‘Zoek op Cardmarket’.");
+                            txtStatus.setText("Herkenning klaar. Controleer naam/nummer en grading; tik daarna op ‘Zoek op Cardmarket’.");
                         }
                     })
                     .addOnFailureListener(e -> txtStatus.setText("OCR mislukt: " + e.getMessage()))
@@ -148,7 +163,7 @@ public class MainActivity extends AppCompatActivity {
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
         s.setDatabaseEnabled(true);
-        s.setUserAgentString(s.getUserAgentString() + " PokemonCardScanner/0.1");
+        // Keep Android WebView's normal user agent. The previous custom suffix made the browser easier to flag as unusual traffic.
         s.setBuiltInZoomControls(true);
         s.setDisplayZoomControls(false);
 
@@ -169,13 +184,15 @@ public class MainActivity extends AppCompatActivity {
 
             @Override
             public void onPageFinished(WebView view, String url) {
+                CookieManager.getInstance().flush();
                 txtWebStatus.setText(url == null ? "Cardmarket" : url.replace("https://www.cardmarket.com", "Cardmarket"));
-                if (pendingSearch != null && !submittedSearch && isCardmarketUrl(url)) {
-                    handler.postDelayed(() -> injectSearch(pendingSearch), 450);
-                } else if (submittedSearch && !autoOpenedProduct && isCardmarketUrl(url)) {
-                    handler.postDelayed(MainActivity.this::tryOpenBestSearchResult, 700);
+
+                if (isSearchPage(url) && pendingSearch != null && !autoOpenedProduct) {
+                    handler.postDelayed(MainActivity.this::tryOpenBestSearchResult, 800);
                 }
-                if (looksLikeProductPage(url)) handler.postDelayed(MainActivity.this::readCurrentCardmarketPage, 900);
+                if (looksLikeProductPage(url)) {
+                    handler.postDelayed(MainActivity.this::readCurrentCardmarketPage, 1000);
+                }
             }
         });
     }
@@ -188,40 +205,31 @@ public class MainActivity extends AppCompatActivity {
     private void startCardmarketSearch() {
         String q = editSearch.getText().toString().trim();
         if (q.isEmpty()) {
-            Toast.makeText(this, "Vul eerst een kaartnaam of collector number in.", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Vul eerst kaartnaam + kaartnummer in.", Toast.LENGTH_SHORT).show();
             return;
         }
         pendingSearch = q;
-        submittedSearch = false;
         autoOpenedProduct = false;
         showWeb();
-        if (!isCardmarketUrl(webView.getUrl())) webView.loadUrl(CARDMARKET_HOME); else injectSearch(q);
-    }
-
-    private void injectSearch(String query) {
-        String safe = JSONObject.quote(query);
-        String js = "(function(){" +
-                "const q=" + safe + ";" +
-                "const inputs=[...document.querySelectorAll('input')];" +
-                "let i=inputs.find(x=>/search cardmarket/i.test(x.placeholder||''));" +
-                "if(!i) i=inputs.find(x=>/search/i.test(x.name||'')||/search/i.test(x.getAttribute('aria-label')||''));" +
-                "if(!i){PokeScanner.onMessage('SEARCH_INPUT_NOT_FOUND');return;}" +
-                "i.focus(); i.value=q; i.dispatchEvent(new Event('input',{bubbles:true})); i.dispatchEvent(new Event('change',{bubbles:true}));" +
-                "const f=i.closest('form'); if(f){f.submit();PokeScanner.onMessage('SEARCH_SUBMITTED');return;}" +
-                "i.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true}));" +
-                "PokeScanner.onMessage('SEARCH_SUBMITTED');" +
-                "})();";
-        webView.evaluateJavascript(js, null);
+        String url = CARDMARKET_SEARCH + Uri.encode(q) + "&mode=gallery";
+        webView.loadUrl(url);
     }
 
     private void tryOpenBestSearchResult() {
         String q = pendingSearch == null ? "" : pendingSearch;
         String safe = JSONObject.quote(q.toLowerCase(Locale.ROOT));
         String js = "(function(){" +
-                "const q=" + safe + "; const parts=q.split(/\\s+/).filter(x=>x.length>1);" +
-                "const links=[...document.querySelectorAll('a[href*=\"/Products/Singles/\"]')];" +
-                "let scored=links.map(a=>{const t=(a.innerText||a.textContent||'').toLowerCase();let s=0;parts.forEach(p=>{if(t.includes(p))s+=p.match(/\\d/) ? 4:1;});return {a,s,t};}).sort((x,y)=>y.s-x.s);" +
-                "if(scored.length&&scored[0].s>=2){scored[0].a.click();PokeScanner.onMessage('BEST_RESULT_OPENED');}" +
+                "const q=" + safe + ";" +
+                "const parts=q.split(/\\s+/).filter(x=>x.length>0);" +
+                "const links=[...document.querySelectorAll('a[href*=\"/Pokemon/Products/Singles/\"]')];" +
+                "const seen=new Set();" +
+                "let scored=[];" +
+                "for(const a of links){const href=a.href||'';if(seen.has(href))continue;seen.add(href);" +
+                "const t=((a.innerText||a.textContent||'')+' '+href).toLowerCase();let s=0;" +
+                "for(const p of parts){if(t.includes(p))s+=/\\d/.test(p)?6:2;}" +
+                "scored.push({a,s,t});}" +
+                "scored.sort((x,y)=>y.s-x.s);" +
+                "if(scored.length&&scored[0].s>=4){PokeScanner.onMessage('BEST_RESULT_OPENED');location.href=scored[0].a.href;}" +
                 "else PokeScanner.onMessage('NO_SAFE_AUTO_MATCH');" +
                 "})();";
         webView.evaluateJavascript(js, null);
@@ -231,10 +239,21 @@ public class MainActivity extends AppCompatActivity {
         String js = "(function(){" +
                 "const lines=(document.body.innerText||'').split(/\\n+/).map(x=>x.trim()).filter(Boolean);" +
                 "const norm=s=>s.toLowerCase().replace(/[^a-z0-9]/g,'');" +
-                "function after(label){const n=norm(label);for(let i=0;i<lines.length;i++){const z=norm(lines[i]);if(z===n&&i+1<lines.length)return lines[i+1];if(z.startsWith(n)&&lines[i].length>label.length)return lines[i].slice(label.length).trim();}return ''; }" +
-                "const stats={available:after('Available items'),from:after('From'),trend:after('Price Trend'),avg30:after('30-days average'),avg7:after('7-days average'),avg1:after('1-day average')};" +
-                "const contexts=[];const rx=/\\b(PSA|BGS|CGC|TAG|ACE|PCA|SGC)\\s*(?:GRADE\\s*)?[-:]?\\s*(10(?:\\.0)?|9\\.5|9|8\\.5|8|7\\.5|7|6\\.5|6|5\\.5|5|4|3|2|1)\\b/i;" +
-                "for(let i=0;i<lines.length;i++){if(rx.test(lines[i])){contexts.push(lines.slice(Math.max(0,i-3),Math.min(lines.length,i+5)).join(' | '));if(contexts.length>=40)break;}}" +
+                "function afterOne(label){const n=norm(label);for(let i=0;i<lines.length;i++){const z=norm(lines[i]);" +
+                "if(z===n&&i+1<lines.length)return lines[i+1];" +
+                "if(z.startsWith(n)&&lines[i].length>label.length){let v=lines[i].slice(label.length).trim();if(v)return v;}}return '';};" +
+                "function afterAny(labels){for(const l of labels){const v=afterOne(l);if(v)return v;}return '';};" +
+                "const stats={available:afterAny(['Available items']),from:afterAny(['From']),trend:afterAny(['Price Trend'])," +
+                "avg30:afterAny(['30-days average price','30-days average']),avg7:afterAny(['7-days average price','7-days average']),avg1:afterAny(['1-day average price','1-day average'])};" +
+                "const rx=/\\b(PSA|BGS|CGC|TAG|ACE|PCA|SGC)\\s*(?:GEM\\s*(?:MT|MINT)\\s*)?(?:GRADE\\s*)?[-:]?\\s*(10(?:\\.0)?|9\\.5|9|8\\.5|8|7\\.5|7|6\\.5|6|5\\.5|5|4\\.5|4|3|2|1)\\b/i;" +
+                "const money=/(?:€|EUR)\\s*[0-9]|[0-9][0-9.,]*\\s*€/i;" +
+                "const contexts=[];const seen=new Set();" +
+                "const blocks=[...document.querySelectorAll('tr,[class*=\"article-row\"],[class*=\"offer-row\"],[class*=\"article\"]')];" +
+                "for(const el of blocks){let t=(el.innerText||el.textContent||'').trim();" +
+                "const attrs=[...el.querySelectorAll('[title],[data-original-title],[data-bs-original-title]')].map(n=>n.getAttribute('title')||n.getAttribute('data-original-title')||n.getAttribute('data-bs-original-title')||'').filter(Boolean);" +
+                "if(attrs.length)t+=' | '+attrs.join(' | ');" +
+                "if(rx.test(t)&&money.test(t)){const key=t.slice(0,500);if(!seen.has(key)){seen.add(key);contexts.push(t.replace(/\\n+/g,' | '));if(contexts.length>=60)break;}}}" +
+                "if(contexts.length===0){for(let i=0;i<lines.length;i++){if(rx.test(lines[i])){const t=lines.slice(Math.max(0,i-4),Math.min(lines.length,i+7)).join(' | ');if(!seen.has(t)){seen.add(t);contexts.push(t);}if(contexts.length>=40)break;}}}" +
                 "const o={title:(document.querySelector('h1')||{}).innerText||document.title,url:location.href,stats:stats,slabs:contexts};" +
                 "PokeScanner.onPageData(JSON.stringify(o));" +
                 "})();";
@@ -257,15 +276,15 @@ public class MainActivity extends AppCompatActivity {
             }
 
             JSONArray slabs = o.optJSONArray("slabs");
-            String wantedGrader = lastOcr == null ? "" : lastOcr.grader;
-            String wantedGrade = lastOcr == null ? "" : lastOcr.grade;
+            String wantedGrader = editGrader.getText().toString().trim().toUpperCase(Locale.ROOT);
+            String wantedGrade = editGrade.getText().toString().trim().replace(',', '.');
             List<String> matching = new ArrayList<>();
             List<Double> prices = new ArrayList<>();
             if (slabs != null) {
                 for (int i = 0; i < slabs.length(); i++) {
                     String s = slabs.optString(i);
                     boolean ok = wantedGrader.isEmpty() || s.toUpperCase(Locale.ROOT).contains(wantedGrader);
-                    if (ok && !wantedGrade.isEmpty()) ok = containsExactGrade(s, wantedGrader, wantedGrade);
+                    if (ok && !wantedGrade.isEmpty() && !wantedGrader.isEmpty()) ok = containsExactGrade(s, wantedGrader, wantedGrade);
                     if (ok) {
                         matching.add(s);
                         Double p = extractEuroPrice(s);
@@ -280,11 +299,13 @@ public class MainActivity extends AppCompatActivity {
                 b.append(" in opmerkingen: ").append(matching.size()).append(" match(es)\n");
                 if (!prices.isEmpty()) {
                     double min = Collections.min(prices);
-                    b.append("Laagste gevonden prijs in matching context: ")
+                    b.append("Laagste gevonden prijs: ")
                             .append(NumberFormat.getCurrencyInstance(Locale.GERMANY).format(min)).append("\n");
                 }
                 int n = Math.min(8, matching.size());
                 for (int i = 0; i < n; i++) b.append("\n• ").append(matching.get(i));
+            } else if (!wantedGrade.isEmpty()) {
+                b.append("\nGrade ").append(wantedGrade).append(" herkend, maar grader ontbreekt. Vul PSA/BGS/CGC/TAG in om opmerkingen goed te filteren.\n");
             } else if (slabs != null && slabs.length() > 0) {
                 b.append("\n\nGraded opmerkingen gevonden: ").append(slabs.length());
                 for (int i = 0; i < Math.min(5, slabs.length()); i++) b.append("\n• ").append(slabs.optString(i));
@@ -292,7 +313,7 @@ public class MainActivity extends AppCompatActivity {
 
             b.append("\n\n").append(o.optString("url"));
             txtResult.setText(b.toString());
-            txtStatus.setText("Cardmarket-pagina uitgelezen met jouw huidige WebView-sessie.");
+            txtStatus.setText("Cardmarket-pagina uitgelezen met jouw ingelogde sessie.");
             showScanner();
         } catch (Exception e) {
             txtResult.setText("Kon Cardmarket-data niet verwerken: " + e.getMessage());
@@ -304,12 +325,15 @@ public class MainActivity extends AppCompatActivity {
         String gr = grade == null ? "" : grade.trim();
         if (g.isEmpty() || gr.isEmpty()) return true;
         String upper = text.toUpperCase(Locale.ROOT).replace('-', ' ');
-        return upper.matches(".*\\b" + java.util.regex.Pattern.quote(g.toUpperCase(Locale.ROOT)) +
-                "\\s*(?:GRADE\\s*)?" + java.util.regex.Pattern.quote(gr) + "\\b.*");
+        return upper.matches("(?s).*\\b" + java.util.regex.Pattern.quote(g.toUpperCase(Locale.ROOT)) +
+                "\\s*(?:GEM\\s*(?:MT|MINT)\\s*)?(?:GRADE\\s*)?" + java.util.regex.Pattern.quote(gr) + "\\b.*");
     }
 
     private static Double extractEuroPrice(String context) {
-        java.util.regex.Matcher m = java.util.regex.Pattern.compile("(?:€|EUR)\\s*([0-9]{1,6}(?:[.,][0-9]{2})?)|([0-9]{1,6}(?:[.,][0-9]{2})?)\\s*€", java.util.regex.Pattern.CASE_INSENSITIVE).matcher(context);
+        String amount = "([0-9]{1,3}(?:\\.[0-9]{3})*(?:,[0-9]{2})|[0-9]+(?:[.,][0-9]{2})?)";
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile(
+                "(?:€|EUR)\\s*" + amount + "|" + amount + "\\s*€",
+                java.util.regex.Pattern.CASE_INSENSITIVE).matcher(context);
         List<Double> candidates = new ArrayList<>();
         while (m.find()) {
             String raw = m.group(1) != null ? m.group(1) : m.group(2);
@@ -329,6 +353,10 @@ public class MainActivity extends AppCompatActivity {
 
     private boolean isCardmarketUrl(String url) {
         return url != null && url.startsWith("https://www.cardmarket.com/");
+    }
+
+    private boolean isSearchPage(String url) {
+        return isCardmarketUrl(url) && url.contains("/Pokemon/Products/Search");
     }
 
     private boolean looksLikeProductPage(String url) {
@@ -360,13 +388,11 @@ public class MainActivity extends AppCompatActivity {
         @JavascriptInterface
         public void onMessage(String message) {
             runOnUiThread(() -> {
-                if ("SEARCH_SUBMITTED".equals(message)) submittedSearch = true;
                 if ("BEST_RESULT_OPENED".equals(message)) autoOpenedProduct = true;
-                if ("SEARCH_INPUT_NOT_FOUND".equals(message)) {
-                    txtWebStatus.setText("Zoekveld niet gevonden — zoek handmatig op Cardmarket");
-                    Toast.makeText(MainActivity.this, "Cardmarket-layout gewijzigd of zoekveld niet gevonden. Zoek handmatig en gebruik daarna ‘Lees huidige pagina’.", Toast.LENGTH_LONG).show();
+                if ("NO_SAFE_AUTO_MATCH".equals(message)) {
+                    txtWebStatus.setText("Kies de juiste kaart uit de zoekresultaten");
+                    Toast.makeText(MainActivity.this, "Meerdere mogelijke kaarten gevonden. Tik één keer op de juiste kaart; daarna wordt de pagina automatisch uitgelezen.", Toast.LENGTH_LONG).show();
                 }
-                if ("NO_SAFE_AUTO_MATCH".equals(message)) txtWebStatus.setText("Kies de juiste kaart uit de zoekresultaten");
             });
         }
 
