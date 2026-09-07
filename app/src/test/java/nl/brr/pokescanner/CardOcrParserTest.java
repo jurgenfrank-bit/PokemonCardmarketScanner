@@ -60,4 +60,31 @@ public class CardOcrParserTest {
         assertEquals("Audino Ex", r.name);
         assertEquals("Audino Ex 84", r.query);
     }
+
+    @Test
+    public void mergedHolorIsRemovedFromBeckettCardName() {
+        String ocr = "2016 XY FATES COLLIDE\n#84 AUDINO EX HOLOR\nCENTERING 9 CORNERS 9\nEDGES 9 SURFACE 9\n0019902509";
+        CardOcrParser.Result r = CardOcrParser.parse(ocr);
+        assertEquals("BGS", r.grader);
+        assertEquals("9", r.grade);
+        assertEquals("Audino Ex", r.name);
+        assertEquals("84", r.collectorNumber);
+        assertEquals("Audino Ex 84", r.query);
+    }
+
+    @Test
+    public void uniformBeckettSubgradesProvideConservativeGradeFallback() {
+        String ocr = "2016 XY FATES COLLIDE\n#84 AUDINO EX HOLOR\nCENTERING 9\nCORNERS 9\nEDGES 9\nSURFACE 9";
+        CardOcrParser.Result r = CardOcrParser.parse(ocr);
+        assertEquals("BGS", r.grader);
+        assertEquals("9", r.grade);
+    }
+
+    @Test
+    public void mixedBeckettSubgradesDoNotInventFinalGrade() {
+        String ocr = "2016 XY FATES COLLIDE\n#84 AUDINO EX HOLOR\nCENTERING 9\nCORNERS 9\nEDGES 8.5\nSURFACE 9";
+        CardOcrParser.Result r = CardOcrParser.parse(ocr);
+        assertEquals("BGS", r.grader);
+        assertEquals("", r.grade);
+    }
 }
