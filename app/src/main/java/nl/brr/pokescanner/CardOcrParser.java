@@ -21,12 +21,16 @@ public final class CardOcrParser {
     private static final Pattern BECKETT_SUBGRADE = Pattern.compile(
             "(?i)\\b(CENTERING|CORNERS|EDGES|SURFACE)\\s*[:\\-]?\\s*" + GRADE_VALUE + "\\b");
 
-    // Typical Beckett label: "#84 AUDINO EX HOLO R".
-    // OCR sometimes merges the last words into "HOLOR".
     private static final Pattern SLAB_CARD_LINE = Pattern.compile(
             "(?i)^#?\\s*(\\d{1,3})\\s+(.+?)\\s*$");
 
     private static final Pattern FRACTION_NUMBER = Pattern.compile("\\b(\\d{1,3})\\s*/\\s*(\\d{1,3})\\b");
+
+    // Modern cards/promos frequently print e.g. "MEP EN 086" at the bottom.
+    // EN is the language marker, not the set code. Cardmarket identifies this as MEP 086.
+    private static final Pattern SET_LANGUAGE_NUMBER = Pattern.compile(
+            "(?i)\\b([A-Z]{2,6})\\s*(?:EN|DE|FR|IT|ES|PT|NL|JP|JPN|KR|KO|CHS|CHT)\\s*([0-9]{1,3})\\b");
+
     private static final Pattern SET_NUMBER = Pattern.compile("\\b([A-Z]{2,6})[\\s-]?(\\d{1,3})\\b", Pattern.CASE_INSENSITIVE);
     private static final Pattern HP = Pattern.compile("(?i)\\s+(?:HP\\s*)?\\d{2,3}\\s*(?:HP)?\\s*$");
     private static final Pattern YEAR_PREFIX = Pattern.compile("^(?:19|20)\\d{2}\\s+");
@@ -66,18 +70,10 @@ public final class CardOcrParser {
             }
         }
 
-        // Beckett slabs can be identified even when OCR misses the logo/name.
-        // Their four subgrade headings are highly characteristic.
         String upperText = text.toUpperCase(Locale.ROOT);
         boolean beckettLabel = looksLikeBeckettLabel(upperText);
-        if (grader.isEmpty() && beckettLabel) {
-            grader = "BGS";
-        }
+        if (grader.isEmpty() && beckettLabel) grader = "BGS";
 
-        // If the large final grade / MINT pair was missed by OCR, infer it only
-        // when at least three Beckett subgrades were read and every read value agrees.
-        // This makes the fallback conservative: 9/9/9/9 => 9, but mixed subgrades
-        // are never converted into an assumed final grade.
         if (grade.isEmpty() && "BGS".equals(grader) && beckettLabel) {
             grade = inferBeckettGradeFromUniformSubgrades(text);
         }
@@ -86,21 +82,37 @@ public final class CardOcrParser {
         String collectorNumber = "";
         String searchNumber = "";
 
-        // First priority: explicit slab label row such as #84 AUDINO EX HOLO R.
-        for (String line : lines) {
-            Matcher sm = SLAB_CARD_LINE.matcher(line);
-            if (sm.matches()) {
-                String n = cleanSlabCardName(sm.group(2));
-                if (isPlausibleCardName(n, grader)) {
-                    collectorNumber = sm.group(1);
-                    searchNumber = sm.group(1);
-                    name = titleCaseIfAllCaps(n);
-                    break;
+        // Slab label parsing must never run on a normal raw card: attack damage or Pokédex
+        // numbers can otherwise look like "84 CARD NAME".
+        boolean slabLike = !grader.isEmpty() || !grade.isEmpty() || beckettLabel;
+        if (slabLike) {
+            for (String line : lines) {
+                Matcher sm = SLAB_CARD_LINE.matcher(line);
+                if (sm.matches()) {
+                    String n = cleanSlabCardName(sm.group(2));
+                    if (isPlausibleCardName(n, grader)) {
+                        collectorNumber = sm.group(1);
+                        searchNumber = sm.group(1);
+                        name = titleCaseIfAllCaps(n);
+                        break;
+                    }
                 }
             }
         }
 
-        // Raw cards / slabs where the label number row was not OCR'd.
+        if (collectorNumber.isEmpty()) {
+            // Strongest raw-card identifier first: set + language + printed number.
+            Matcher sln = SET_LANGUAGE_NUMBER.matcher(text);
+            if (sln.find()) {
+                String code = sln.group(1).toUpperCase(Locale.ROOT);
+                String number = sln.group(2);
+                if (!isLikelyNoiseCode(code)) {
+                    collectorNumber = code + " " + number;
+                    searchNumber = collectorNumber;
+                }
+            }
+        }
+
         if (collectorNumber.isEmpty()) {
             Matcher f = FRACTION_NUMBER.matcher(text);
             if (f.find()) {
@@ -110,7 +122,7 @@ public final class CardOcrParser {
                 Matcher sn = SET_NUMBER.matcher(text);
                 while (sn.find()) {
                     String code = sn.group(1).toUpperCase(Locale.ROOT);
-                    if (!isLikelyNoiseCode(code)) {
+                    if (!isLikelyNoiseCode(code) && !isLanguageCode(code)) {
                         collectorNumber = code + sn.group(2);
                         searchNumber = collectorNumber;
                         break;
@@ -138,32 +150,23 @@ public final class CardOcrParser {
     private static String inferBeckettGradeFromUniformSubgrades(String text) {
         Matcher m = BECKETT_SUBGRADE.matcher(text);
         List<String> grades = new ArrayList<>();
-        while (m.find()) {
-            grades.add(m.group(2));
-        }
+        while (m.find()) grades.add(m.group(2));
         if (grades.size() < 3) return "";
         String first = grades.get(0);
-        for (String g : grades) {
-            if (!first.equals(g)) return "";
-        }
+        for (String g : grades) if (!first.equals(g)) return "";
         return first;
     }
 
     private static String normalizeGrader(String raw) {
         if (raw == null) return "";
         String g = raw.trim().toUpperCase(Locale.ROOT);
-        if (g.equals("BECKETT")) return "BGS";
-        return g;
+        return g.equals("BECKETT") ? "BGS" : g;
     }
 
     private static String cleanSlabCardName(String s) {
         String x = s == null ? "" : s.trim();
-
-        // Normal spellings plus frequent OCR merges/errors on slab labels.
-        // Examples: HOLO R, HOLOR, HOL0R, H0L0 R.
         x = x.replaceAll("(?i)\\s+(?:H[O0]L[O0]\\s*R?|HOLOR|REVERSE(?:\\s+H[O0]L[O0])?|NON[- ]?H[O0]L[O0]|RARE|R)\\s*$", "");
-        x = x.replaceAll("\\s+", " ").trim();
-        return x;
+        return x.replaceAll("\\s+", " ").trim();
     }
 
     private static boolean isPlausibleCardName(String candidate, String grader) {
@@ -177,12 +180,12 @@ public final class CardOcrParser {
         int bestScore = Integer.MIN_VALUE;
 
         for (int i = 0; i < lines.size(); i++) {
-            String original = lines.get(i);
-            String candidate = original.trim();
+            String candidate = lines.get(i).trim();
             String upperOriginal = candidate.toUpperCase(Locale.ROOT);
 
             if (isMetadataLine(upperOriginal, grader)) continue;
             if (FRACTION_NUMBER.matcher(candidate).find()) continue;
+            if (SET_LANGUAGE_NUMBER.matcher(candidate).find()) continue;
             if (looksLikeSetCodeNumber(candidate)) continue;
 
             candidate = YEAR_PREFIX.matcher(candidate).replaceFirst("").trim();
@@ -216,6 +219,9 @@ public final class CardOcrParser {
         String u = upper.trim();
         if (u.isEmpty()) return true;
 
+        // ML Kit often reads the stylized BASIC badge as BASIG/BAS1C/BAS1G.
+        if (looksLikeBasicOcr(u)) return true;
+
         for (String word : NOISE_EXACT) {
             if (u.equals(word) || u.startsWith(word + " ")) return true;
         }
@@ -226,24 +232,28 @@ public final class CardOcrParser {
         if (u.matches(".*\\bMINT\\s*" + GRADE_VALUE + "\\b.*")) return true;
         if (u.matches(".*\\b" + GRADE_VALUE + "\\s*MINT\\b.*")) return true;
         if (u.matches(".*\\bGRADE\\s*" + GRADE_VALUE + "\\b.*")) return true;
-
-        // Any year-led slab line is metadata/set information, not the card name.
         if (u.matches("^(19|20)\\d{2}\\b.*")) return true;
-
-        // Beckett subgrade rows must never become card names.
         if (u.contains("CENTERING") || u.contains("CORNERS") || u.contains("EDGES") || u.contains("SURFACE")) return true;
-
         if (u.contains("CERT #") || u.contains("CERTIFICATION") || u.contains("AUTHENTIC")) return true;
         if (u.contains(" ENGLISH") || u.equals("ENGLISH") || u.contains(" JAPANESE") || u.equals("JAPANESE")) return true;
         if (u.startsWith("POKEMON ") || u.startsWith("POKÉMON ")) return true;
         return false;
     }
 
+    private static boolean looksLikeBasicOcr(String u) {
+        String compact = u.replaceAll("[^A-Z0-9]", "");
+        return compact.matches("BAS[I1L][CG6]");
+    }
+
     private static boolean looksLikeSetCodeNumber(String text) {
         Matcher sn = SET_NUMBER.matcher(text);
         if (!sn.find()) return false;
         String code = sn.group(1).toUpperCase(Locale.ROOT);
-        return !isLikelyNoiseCode(code) && text.trim().length() <= 12;
+        return !isLikelyNoiseCode(code) && !isLanguageCode(code) && text.trim().length() <= 12;
+    }
+
+    private static boolean isLanguageCode(String code) {
+        return Arrays.asList("EN", "DE", "FR", "IT", "ES", "PT", "NL", "JP", "JPN", "KR", "KO", "CHS", "CHT").contains(code);
     }
 
     private static boolean isLikelyNoiseCode(String code) {
