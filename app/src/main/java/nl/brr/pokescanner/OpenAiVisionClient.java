@@ -190,7 +190,7 @@ public final class OpenAiVisionClient {
         byte[] original;
         try (InputStream in = context.getContentResolver().openInputStream(uri)) {
             if (in == null) throw new Exception("Foto kon niet worden geopend");
-            original = readBytes(in, MAX_ORIGINAL_BYTES + 1);
+            original = readAllBytes(in);
         }
 
         if (original.length <= MAX_ORIGINAL_BYTES) {
@@ -214,19 +214,11 @@ public final class OpenAiVisionClient {
         return new ImagePayload("image/jpeg", Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP));
     }
 
-    private static byte[] readBytes(InputStream in, int limit) throws Exception {
+    private static byte[] readAllBytes(InputStream in) throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         byte[] buf = new byte[8192];
-        int total = 0;
         int n;
-        while ((n = in.read(buf)) != -1) {
-            total += n;
-            if (total > limit) {
-                out.write(buf, 0, n);
-                break;
-            }
-            out.write(buf, 0, n);
-        }
+        while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
         return out.toByteArray();
     }
 
