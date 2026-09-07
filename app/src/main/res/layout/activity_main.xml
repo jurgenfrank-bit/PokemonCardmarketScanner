@@ -23,6 +23,16 @@
             android:textColor="@color/black" />
 
         <Button
+            android:id="@+id/btnAiSettings"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="AI" />
+
+        <Space
+            android:layout_width="6dp"
+            android:layout_height="1dp" />
+
+        <Button
             android:id="@+id/btnCardmarket"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
@@ -84,6 +94,15 @@
                 android:textColor="#555555" />
 
             <TextView
+                android:id="@+id/txtAiDetails"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:text="AI vision: controleren…"
+                android:textColor="#555555"
+                android:textStyle="bold" />
+
+            <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="18dp"
@@ -94,7 +113,7 @@
                 android:id="@+id/editSearch"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:hint="Bijv. Charizard BS4"
+                android:hint="Bijv. Slowpoke MEP 086"
                 android:inputType="textCapWords"
                 android:textSize="18sp" />
 
