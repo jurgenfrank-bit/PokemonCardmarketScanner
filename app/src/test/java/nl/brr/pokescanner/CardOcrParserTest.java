@@ -39,4 +39,25 @@ public class CardOcrParserTest {
         assertEquals("Pikachu 088", r.query);
         assertTrue(r.grader.isEmpty());
     }
+
+    @Test
+    public void beckettAudinoLabelIsRecognizedFromSubgradesAndLabelRow() {
+        String ocr = "2016 XY FATES COLLIDE\n#84 AUDINO EX HOLO R\n9\nMINT\n0019902509\nCENTERING 9 CORNERS 9\nEDGES 9 SURFACE 9";
+        CardOcrParser.Result r = CardOcrParser.parse(ocr);
+        assertEquals("BGS", r.grader);
+        assertEquals("9", r.grade);
+        assertEquals("Audino Ex", r.name);
+        assertEquals("84", r.collectorNumber);
+        assertEquals("Audino Ex 84", r.query);
+    }
+
+    @Test
+    public void beckettWordAlsoNormalizesToBgs() {
+        String ocr = "BECKETT\n2016 XY FATES COLLIDE\n#84 AUDINO EX HOLO R\nMINT 9";
+        CardOcrParser.Result r = CardOcrParser.parse(ocr);
+        assertEquals("BGS", r.grader);
+        assertEquals("9", r.grade);
+        assertEquals("Audino Ex", r.name);
+        assertEquals("Audino Ex 84", r.query);
+    }
 }
