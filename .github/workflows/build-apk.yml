@@ -25,6 +25,9 @@ jobs:
         with:
           gradle-version: '8.9'
 
+      - name: Apply v0.9 no-bad-fallback patch
+        run: python3 scripts/apply_v09_no_bad_fallback.py
+
       - name: Run unit tests
         run: gradle --no-daemon testDebugUnitTest
 
