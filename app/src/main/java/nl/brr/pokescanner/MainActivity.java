@@ -6,6 +6,8 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.view.View;
 import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
@@ -38,7 +40,6 @@ import org.json.JSONObject;
 import java.io.File;
 import java.text.NumberFormat;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 
@@ -86,6 +87,7 @@ public class MainActivity extends AppCompatActivity {
         webView = findViewById(R.id.webView);
 
         setupWebView();
+        setupManualSlabFields();
 
         findViewById(R.id.btnCamera).setOnClickListener(v -> openCamera());
         findViewById(R.id.btnGallery).setOnClickListener(v -> galleryLauncher.launch("image/*"));
@@ -101,6 +103,30 @@ public class MainActivity extends AppCompatActivity {
         findViewById(R.id.btnBackToScanner).setOnClickListener(v -> showScanner());
         findViewById(R.id.btnWebBack).setOnClickListener(v -> { if (webView.canGoBack()) webView.goBack(); });
         findViewById(R.id.btnWebForward).setOnClickListener(v -> { if (webView.canGoForward()) webView.goForward(); });
+    }
+
+    private void setupManualSlabFields() {
+        TextWatcher watcher = new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) { }
+            @Override public void afterTextChanged(Editable s) { updateSlabLabelFromFields(); }
+        };
+        editGrader.addTextChangedListener(watcher);
+        editGrade.addTextChangedListener(watcher);
+    }
+
+    private void updateSlabLabelFromFields() {
+        String grader = GradedOfferAnalyzer.normalizeGrader(editGrader.getText().toString());
+        String grade = editGrade.getText().toString().trim().replace(',', '.');
+        if (grader.isEmpty() && grade.isEmpty()) {
+            txtSlab.setText("Slab: raw / niet herkend");
+        } else if (grader.isEmpty()) {
+            txtSlab.setText("Slab: grade " + grade + " — grader niet zeker");
+        } else if (grade.isEmpty()) {
+            txtSlab.setText("Slab: " + grader + " — grade niet zeker");
+        } else {
+            txtSlab.setText("Slab: " + grader + " " + grade);
+        }
     }
 
     private void openCamera() {
@@ -132,14 +158,7 @@ public class MainActivity extends AppCompatActivity {
                         editSearch.setText(lastOcr.query);
                         editGrader.setText(lastOcr.grader);
                         editGrade.setText(lastOcr.grade);
-
-                        if (!lastOcr.grader.isEmpty()) {
-                            txtSlab.setText("Slab: " + lastOcr.grader + (lastOcr.grade.isEmpty() ? "" : " " + lastOcr.grade));
-                        } else if (!lastOcr.grade.isEmpty()) {
-                            txtSlab.setText("Slab: grade " + lastOcr.grade + " herkend, merk niet zeker");
-                        } else {
-                            txtSlab.setText("Slab: raw / geen grader herkend");
-                        }
+                        updateSlabLabelFromFields();
 
                         if (lastOcr.query.isEmpty()) {
                             txtStatus.setText("Kaartnaam niet betrouwbaar herkend. Vul naam + kaartnummer in; grading kun je eronder corrigeren.");
@@ -163,7 +182,6 @@ public class MainActivity extends AppCompatActivity {
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
         s.setDatabaseEnabled(true);
-        // Keep Android WebView's normal user agent. The previous custom suffix made the browser easier to flag as unusual traffic.
         s.setBuiltInZoomControls(true);
         s.setDisplayZoomControls(false);
 
@@ -208,6 +226,7 @@ public class MainActivity extends AppCompatActivity {
             Toast.makeText(this, "Vul eerst kaartnaam + kaartnummer in.", Toast.LENGTH_SHORT).show();
             return;
         }
+        updateSlabLabelFromFields();
         pendingSearch = q;
         autoOpenedProduct = false;
         showWeb();
@@ -222,16 +241,13 @@ public class MainActivity extends AppCompatActivity {
                 "const q=" + safe + ";" +
                 "const parts=q.split(/\\s+/).filter(x=>x.length>0);" +
                 "const links=[...document.querySelectorAll('a[href*=\"/Pokemon/Products/Singles/\"]')];" +
-                "const seen=new Set();" +
-                "let scored=[];" +
+                "const seen=new Set();let scored=[];" +
                 "for(const a of links){const href=a.href||'';if(seen.has(href))continue;seen.add(href);" +
-                "const t=((a.innerText||a.textContent||'')+' '+href).toLowerCase();let s=0;" +
-                "for(const p of parts){if(t.includes(p))s+=/\\d/.test(p)?6:2;}" +
-                "scored.push({a,s,t});}" +
+                "const t=((a.innerText||a.textContent||'')+' '+href).toLowerCase();let sc=0;" +
+                "for(const p of parts){if(t.includes(p))sc+=/\\d/.test(p)?6:2;}scored.push({a,s:sc});}" +
                 "scored.sort((x,y)=>y.s-x.s);" +
                 "if(scored.length&&scored[0].s>=4){PokeScanner.onMessage('BEST_RESULT_OPENED');location.href=scored[0].a.href;}" +
-                "else PokeScanner.onMessage('NO_SAFE_AUTO_MATCH');" +
-                "})();";
+                "else PokeScanner.onMessage('NO_SAFE_AUTO_MATCH');})();";
         webView.evaluateJavascript(js, null);
     }
 
@@ -245,18 +261,17 @@ public class MainActivity extends AppCompatActivity {
                 "function afterAny(labels){for(const l of labels){const v=afterOne(l);if(v)return v;}return '';};" +
                 "const stats={available:afterAny(['Available items']),from:afterAny(['From']),trend:afterAny(['Price Trend'])," +
                 "avg30:afterAny(['30-days average price','30-days average']),avg7:afterAny(['7-days average price','7-days average']),avg1:afterAny(['1-day average price','1-day average'])};" +
-                "const rx=/\\b(PSA|BGS|CGC|TAG|ACE|PCA|SGC)\\s*(?:GEM\\s*(?:MT|MINT)\\s*)?(?:GRADE\\s*)?[-:]?\\s*(10(?:\\.0)?|9\\.5|9|8\\.5|8|7\\.5|7|6\\.5|6|5\\.5|5|4\\.5|4|3|2|1)\\b/i;" +
+                "const rx=/\\b(PSA|BGS|BECKETT|CGC|TAG|ACE|PCA|SGC)\\b\\s*(?:GEM\\s*(?:MT|MINT)|MINT|GRADE)?\\s*[-:]?\\s*(10(?:\\.0)?|9\\.5|9|8\\.5|8|7\\.5|7|6\\.5|6|5\\.5|5|4\\.5|4|3|2|1)\\b/i;" +
                 "const money=/(?:€|EUR)\\s*[0-9]|[0-9][0-9.,]*\\s*€/i;" +
                 "const contexts=[];const seen=new Set();" +
                 "const blocks=[...document.querySelectorAll('tr,[class*=\"article-row\"],[class*=\"offer-row\"],[class*=\"article\"]')];" +
                 "for(const el of blocks){let t=(el.innerText||el.textContent||'').trim();" +
                 "const attrs=[...el.querySelectorAll('[title],[data-original-title],[data-bs-original-title]')].map(n=>n.getAttribute('title')||n.getAttribute('data-original-title')||n.getAttribute('data-bs-original-title')||'').filter(Boolean);" +
                 "if(attrs.length)t+=' | '+attrs.join(' | ');" +
-                "if(rx.test(t)&&money.test(t)){const key=t.slice(0,500);if(!seen.has(key)){seen.add(key);contexts.push(t.replace(/\\n+/g,' | '));if(contexts.length>=60)break;}}}" +
-                "if(contexts.length===0){for(let i=0;i<lines.length;i++){if(rx.test(lines[i])){const t=lines.slice(Math.max(0,i-4),Math.min(lines.length,i+7)).join(' | ');if(!seen.has(t)){seen.add(t);contexts.push(t);}if(contexts.length>=40)break;}}}" +
+                "if(rx.test(t)&&money.test(t)){const key=t.slice(0,700);if(!seen.has(key)){seen.add(key);contexts.push(t.replace(/\\n+/g,' | '));if(contexts.length>=100)break;}}}" +
+                "if(contexts.length===0){for(let i=0;i<lines.length;i++){if(rx.test(lines[i])){const t=lines.slice(Math.max(0,i-4),Math.min(lines.length,i+7)).join(' | ');if(!seen.has(t)){seen.add(t);contexts.push(t);}if(contexts.length>=60)break;}}}" +
                 "const o={title:(document.querySelector('h1')||{}).innerText||document.title,url:location.href,stats:stats,slabs:contexts};" +
-                "PokeScanner.onPageData(JSON.stringify(o));" +
-                "})();";
+                "PokeScanner.onPageData(JSON.stringify(o));})();";
         webView.evaluateJavascript(js, null);
     }
 
@@ -276,75 +291,56 @@ public class MainActivity extends AppCompatActivity {
             }
 
             JSONArray slabs = o.optJSONArray("slabs");
-            String wantedGrader = editGrader.getText().toString().trim().toUpperCase(Locale.ROOT);
-            String wantedGrade = editGrade.getText().toString().trim().replace(',', '.');
-            List<String> matching = new ArrayList<>();
-            List<Double> prices = new ArrayList<>();
+            List<String> contexts = new ArrayList<>();
             if (slabs != null) {
-                for (int i = 0; i < slabs.length(); i++) {
-                    String s = slabs.optString(i);
-                    boolean ok = wantedGrader.isEmpty() || s.toUpperCase(Locale.ROOT).contains(wantedGrader);
-                    if (ok && !wantedGrade.isEmpty() && !wantedGrader.isEmpty()) ok = containsExactGrade(s, wantedGrader, wantedGrade);
-                    if (ok) {
-                        matching.add(s);
-                        Double p = extractEuroPrice(s);
-                        if (p != null) prices.add(p);
-                    }
-                }
+                for (int i = 0; i < slabs.length(); i++) contexts.add(slabs.optString(i));
             }
 
-            if (!wantedGrader.isEmpty()) {
-                b.append("\n").append(wantedGrader);
-                if (!wantedGrade.isEmpty()) b.append(" ").append(wantedGrade);
-                b.append(" in opmerkingen: ").append(matching.size()).append(" match(es)\n");
-                if (!prices.isEmpty()) {
-                    double min = Collections.min(prices);
+            String wantedGrader = GradedOfferAnalyzer.normalizeGrader(editGrader.getText().toString());
+            String wantedGrade = editGrade.getText().toString().trim().replace(',', '.');
+
+            if (!wantedGrader.isEmpty() && !wantedGrade.isEmpty()) {
+                GradedOfferAnalyzer.Analysis analysis = GradedOfferAnalyzer.analyze(contexts, wantedGrader, wantedGrade);
+                b.append("\n").append(wantedGrader).append(" ").append(wantedGrade)
+                        .append(" in opmerkingen: ").append(analysis.exactContexts.size()).append(" match(es)\n");
+                if (analysis.exactMinPrice != null) {
                     b.append("Laagste gevonden prijs: ")
-                            .append(NumberFormat.getCurrencyInstance(Locale.GERMANY).format(min)).append("\n");
+                            .append(NumberFormat.getCurrencyInstance(Locale.GERMANY).format(analysis.exactMinPrice)).append("\n");
                 }
-                int n = Math.min(8, matching.size());
-                for (int i = 0; i < n; i++) b.append("\n• ").append(matching.get(i));
+                for (int i = 0; i < Math.min(5, analysis.exactContexts.size()); i++) {
+                    b.append("\n• ").append(analysis.exactContexts.get(i));
+                }
+
+                if (!analysis.alternatives.isEmpty()) {
+                    b.append("\n\nAndere graders — grade ").append(wantedGrade).append(" of hoger:\n");
+                    for (GradedOfferAnalyzer.Alternative a : analysis.alternatives) {
+                        b.append("• ").append(a.grader).append(" ").append(GradedOfferAnalyzer.formatGrade(a.grade))
+                                .append(" — ").append(a.count).append(a.count == 1 ? " aanbieding" : " aanbiedingen");
+                        if (a.minPrice != null) {
+                            b.append(" — vanaf ").append(NumberFormat.getCurrencyInstance(Locale.GERMANY).format(a.minPrice));
+                        }
+                        b.append("\n");
+                    }
+                    b.append("Numerieke grades worden alleen als zoekfilter vergeleken; graders zijn niet 1-op-1 gelijkwaardig.\n");
+                } else if (analysis.exactContexts.isEmpty()) {
+                    b.append("\nGeen aanbiedingen van andere graders met grade ").append(wantedGrade)
+                            .append(" of hoger gevonden in de zichtbare Cardmarket-aanbiedingen.\n");
+                }
             } else if (!wantedGrade.isEmpty()) {
                 b.append("\nGrade ").append(wantedGrade).append(" herkend, maar grader ontbreekt. Vul PSA/BGS/CGC/TAG in om opmerkingen goed te filteren.\n");
-            } else if (slabs != null && slabs.length() > 0) {
-                b.append("\n\nGraded opmerkingen gevonden: ").append(slabs.length());
-                for (int i = 0; i < Math.min(5, slabs.length()); i++) b.append("\n• ").append(slabs.optString(i));
+            } else if (!contexts.isEmpty()) {
+                b.append("\n\nGraded opmerkingen gevonden: ").append(contexts.size());
+                for (int i = 0; i < Math.min(5, contexts.size()); i++) b.append("\n• ").append(contexts.get(i));
             }
 
             b.append("\n\n").append(o.optString("url"));
             txtResult.setText(b.toString());
             txtStatus.setText("Cardmarket-pagina uitgelezen met jouw ingelogde sessie.");
+            updateSlabLabelFromFields();
             showScanner();
         } catch (Exception e) {
             txtResult.setText("Kon Cardmarket-data niet verwerken: " + e.getMessage());
         }
-    }
-
-    private static boolean containsExactGrade(String text, String grader, String grade) {
-        String g = grader == null ? "" : grader.trim();
-        String gr = grade == null ? "" : grade.trim();
-        if (g.isEmpty() || gr.isEmpty()) return true;
-        String upper = text.toUpperCase(Locale.ROOT).replace('-', ' ');
-        return upper.matches("(?s).*\\b" + java.util.regex.Pattern.quote(g.toUpperCase(Locale.ROOT)) +
-                "\\s*(?:GEM\\s*(?:MT|MINT)\\s*)?(?:GRADE\\s*)?" + java.util.regex.Pattern.quote(gr) + "\\b.*");
-    }
-
-    private static Double extractEuroPrice(String context) {
-        String amount = "([0-9]{1,3}(?:\\.[0-9]{3})*(?:,[0-9]{2})|[0-9]+(?:[.,][0-9]{2})?)";
-        java.util.regex.Matcher m = java.util.regex.Pattern.compile(
-                "(?:€|EUR)\\s*" + amount + "|" + amount + "\\s*€",
-                java.util.regex.Pattern.CASE_INSENSITIVE).matcher(context);
-        List<Double> candidates = new ArrayList<>();
-        while (m.find()) {
-            String raw = m.group(1) != null ? m.group(1) : m.group(2);
-            try {
-                String cleaned = raw.trim();
-                if (cleaned.contains(",") && cleaned.contains(".")) cleaned = cleaned.replace(".", "").replace(',', '.');
-                else if (cleaned.contains(",")) cleaned = cleaned.replace(',', '.');
-                candidates.add(Double.parseDouble(cleaned));
-            } catch (Exception ignored) { }
-        }
-        return candidates.isEmpty() ? null : Collections.min(candidates);
     }
 
     private static void appendIf(StringBuilder b, String label, String value) {
