@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <style name="Theme.PokeScanner" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/brand_red</item>
+        <item name="colorPrimaryVariant">@color/brand_red</item>
+        <item name="colorOnPrimary">@color/white</item>
+        <item name="android:fontFamily">sans</item>
+        <item name="android:navigationBarColor">@color/black</item>
+    </style>
+</resources>
