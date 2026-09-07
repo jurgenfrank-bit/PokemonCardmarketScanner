@@ -68,8 +68,8 @@ main_path.write_text(text, encoding='utf-8')
 
 build_path = Path('app/build.gradle')
 build = build_path.read_text(encoding='utf-8')
-build = re.sub(r"versionCode\s+\d+", "versionCode 6", build, count=1)
-build = re.sub(r"versionName\s+'[^']+'", "versionName '0.6.0'", build, count=1)
+build = re.sub(r"versionCode\s+\d+", "versionCode 7", build, count=1)
+build = re.sub(r"versionName\s+'[^']+'", "versionName '0.7.0'", build, count=1)
 build_path.write_text(build, encoding='utf-8')
 
-print('Applied v0.6 Cardmarket confirmation flow patch')
+print('Applied Cardmarket confirmation flow for v0.7')
