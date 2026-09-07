@@ -18,10 +18,13 @@ public final class CardOcrParser {
     private static final Pattern GRADE_REVERSED = Pattern.compile(
             "(?i)\\b" + GRADE_VALUE + "\\s*(?:GEM\\s*)?(?:MINT|MT)\\b");
 
+    private static final Pattern BECKETT_SUBGRADE = Pattern.compile(
+            "(?i)\\b(CENTERING|CORNERS|EDGES|SURFACE)\\s*[:\\-]?\\s*" + GRADE_VALUE + "\\b");
+
     // Typical Beckett label: "#84 AUDINO EX HOLO R".
-    // This is more authoritative than the set line above it.
+    // OCR sometimes merges the last words into "HOLOR".
     private static final Pattern SLAB_CARD_LINE = Pattern.compile(
-            "(?i)^#?\\s*(\\d{1,3})\\s+(.+?)(?:\\s+(?:HOLO(?:\\s+R)?|REVERSE(?:\\s+HOLO)?|NON[- ]?HOLO|RARE|R))?\\s*$");
+            "(?i)^#?\\s*(\\d{1,3})\\s+(.+?)\\s*$");
 
     private static final Pattern FRACTION_NUMBER = Pattern.compile("\\b(\\d{1,3})\\s*/\\s*(\\d{1,3})\\b");
     private static final Pattern SET_NUMBER = Pattern.compile("\\b([A-Z]{2,6})[\\s-]?(\\d{1,3})\\b", Pattern.CASE_INSENSITIVE);
@@ -31,7 +34,7 @@ public final class CardOcrParser {
     private static final List<String> NOISE_EXACT = Arrays.asList(
             "BASIC", "STAGE", "TRAINER", "ENERGY", "POKEMON", "POKÉMON", "GAME",
             "GEM MT", "GEM MINT", "MINT", "GEM", "AUTHENTIC", "CERT", "CERTIFICATE",
-            "HOLO", "REVERSE", "ILLUSTRATION RARE", "RARE", "CARD", "WEAKNESS",
+            "HOLO", "HOLOR", "REVERSE", "ILLUSTRATION RARE", "RARE", "CARD", "WEAKNESS",
             "RESISTANCE", "RETREAT", "ABILITY", "RULE", "SV", "VSTAR", "V-MAX"
     );
 
@@ -66,8 +69,17 @@ public final class CardOcrParser {
         // Beckett slabs can be identified even when OCR misses the logo/name.
         // Their four subgrade headings are highly characteristic.
         String upperText = text.toUpperCase(Locale.ROOT);
-        if (grader.isEmpty() && looksLikeBeckettLabel(upperText)) {
+        boolean beckettLabel = looksLikeBeckettLabel(upperText);
+        if (grader.isEmpty() && beckettLabel) {
             grader = "BGS";
+        }
+
+        // If the large final grade / MINT pair was missed by OCR, infer it only
+        // when at least three Beckett subgrades were read and every read value agrees.
+        // This makes the fallback conservative: 9/9/9/9 => 9, but mixed subgrades
+        // are never converted into an assumed final grade.
+        if (grade.isEmpty() && "BGS".equals(grader) && beckettLabel) {
+            grade = inferBeckettGradeFromUniformSubgrades(text);
         }
 
         String name = "";
@@ -123,6 +135,20 @@ public final class CardOcrParser {
         return hits >= 3;
     }
 
+    private static String inferBeckettGradeFromUniformSubgrades(String text) {
+        Matcher m = BECKETT_SUBGRADE.matcher(text);
+        List<String> grades = new ArrayList<>();
+        while (m.find()) {
+            grades.add(m.group(2));
+        }
+        if (grades.size() < 3) return "";
+        String first = grades.get(0);
+        for (String g : grades) {
+            if (!first.equals(g)) return "";
+        }
+        return first;
+    }
+
     private static String normalizeGrader(String raw) {
         if (raw == null) return "";
         String g = raw.trim().toUpperCase(Locale.ROOT);
@@ -132,7 +158,10 @@ public final class CardOcrParser {
 
     private static String cleanSlabCardName(String s) {
         String x = s == null ? "" : s.trim();
-        x = x.replaceAll("(?i)\\s+(?:HOLO(?:\\s+R)?|REVERSE(?:\\s+HOLO)?|NON[- ]?HOLO|RARE|R)\\s*$", "");
+
+        // Normal spellings plus frequent OCR merges/errors on slab labels.
+        // Examples: HOLO R, HOLOR, HOL0R, H0L0 R.
+        x = x.replaceAll("(?i)\\s+(?:H[O0]L[O0]\\s*R?|HOLOR|REVERSE(?:\\s+H[O0]L[O0])?|NON[- ]?H[O0]L[O0]|RARE|R)\\s*$", "");
         x = x.replaceAll("\\s+", " ").trim();
         return x;
     }
@@ -158,7 +187,7 @@ public final class CardOcrParser {
 
             candidate = YEAR_PREFIX.matcher(candidate).replaceFirst("").trim();
             candidate = HP.matcher(candidate).replaceFirst("").trim();
-            candidate = candidate.replaceAll("(?i)[–—-]?\\s*(HOLO|REVERSE HOLO)\\s*$", "").trim();
+            candidate = cleanSlabCardName(candidate);
             candidate = candidate.replaceAll("(?i)\\b(?:GEM\\s*(?:MT|MINT)|MINT|GRADE)\\s*" + GRADE_VALUE + "\\b", "").trim();
 
             if (candidate.length() < 2 || candidate.length() > 48) continue;
