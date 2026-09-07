@@ -1,12 +1,14 @@
 package nl.brr.pokescanner;
 
 import android.annotation.SuppressLint;
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.Editable;
+import android.text.InputType;
 import android.text.TextWatcher;
 import android.view.View;
 import android.webkit.CookieManager;
@@ -49,11 +51,12 @@ public class MainActivity extends AppCompatActivity {
 
     private ImageView imagePreview;
     private EditText editSearch, editGrader, editGrade;
-    private TextView txtStatus, txtSlab, txtResult, txtWebStatus;
+    private TextView txtStatus, txtAiDetails, txtSlab, txtResult, txtWebStatus;
     private ScrollView mainScroll;
     private LinearLayout webContainer;
     private WebView webView;
     private Uri pendingCameraUri;
+    private Uri lastImageUri;
     private CardOcrParser.Result lastOcr;
     private String pendingSearch = null;
     private boolean autoOpenedProduct = false;
@@ -61,12 +64,12 @@ public class MainActivity extends AppCompatActivity {
 
     private final ActivityResultLauncher<String> galleryLauncher = registerForActivityResult(
             new ActivityResultContracts.GetContent(), uri -> {
-                if (uri != null) showImageAndOcr(uri);
+                if (uri != null) showImageAndAnalyze(uri);
             });
 
     private final ActivityResultLauncher<Uri> cameraLauncher = registerForActivityResult(
             new ActivityResultContracts.TakePicture(), success -> {
-                if (Boolean.TRUE.equals(success) && pendingCameraUri != null) showImageAndOcr(pendingCameraUri);
+                if (Boolean.TRUE.equals(success) && pendingCameraUri != null) showImageAndAnalyze(pendingCameraUri);
             });
 
     @Override
@@ -79,6 +82,7 @@ public class MainActivity extends AppCompatActivity {
         editGrader = findViewById(R.id.editGrader);
         editGrade = findViewById(R.id.editGrade);
         txtStatus = findViewById(R.id.txtStatus);
+        txtAiDetails = findViewById(R.id.txtAiDetails);
         txtSlab = findViewById(R.id.txtSlab);
         txtResult = findViewById(R.id.txtResult);
         txtWebStatus = findViewById(R.id.txtWebStatus);
@@ -88,14 +92,16 @@ public class MainActivity extends AppCompatActivity {
 
         setupWebView();
         setupManualSlabFields();
+        updateAiStatus();
 
         findViewById(R.id.btnCamera).setOnClickListener(v -> openCamera());
         findViewById(R.id.btnGallery).setOnClickListener(v -> galleryLauncher.launch("image/*"));
+        findViewById(R.id.btnAiSettings).setOnClickListener(v -> showAiSettings());
         findViewById(R.id.btnCardmarket).setOnClickListener(v -> openCardmarket());
         findViewById(R.id.btnSearch).setOnClickListener(v -> startCardmarketSearch());
         findViewById(R.id.btnReadPage).setOnClickListener(v -> {
-            if (!isCardmarketUrl(webView.getUrl())) {
-                Toast.makeText(this, "Open eerst Cardmarket.", Toast.LENGTH_SHORT).show();
+            if (!looksLikeProductPage(webView.getUrl())) {
+                Toast.makeText(this, "Open eerst de juiste Cardmarket-productpagina.", Toast.LENGTH_SHORT).show();
             } else {
                 readCurrentCardmarketPage();
             }
@@ -129,6 +135,67 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private void updateAiStatus() {
+        boolean configured = !SecureApiKeyStore.load(this).isEmpty();
+        if (txtAiDetails != null) {
+            txtAiDetails.setText(configured
+                    ? "AI vision: GPT-5.6 Sol actief"
+                    : "AI vision: niet ingesteld — tik bovenaan op AI");
+        }
+    }
+
+    private void showAiSettings() {
+        final String existing = SecureApiKeyStore.load(this);
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        input.setHint(existing.isEmpty() ? "OpenAI API-key (sk-...)" : "API-key is opgeslagen; vul in om te vervangen");
+        int pad = Math.round(20 * getResources().getDisplayMetrics().density);
+        LinearLayout wrap = new LinearLayout(this);
+        wrap.setPadding(pad, 0, pad, 0);
+        wrap.addView(input, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("AI vision instellen")
+                .setMessage("De key wordt versleuteld met Android Keystore en alleen naar api.openai.com gestuurd. Hij staat niet in de APK.")
+                .setView(wrap)
+                .setNegativeButton("Annuleren", null)
+                .setNeutralButton("Verwijder key", null)
+                .setPositiveButton("Opslaan", null)
+                .create();
+
+        dialog.setOnShowListener(d -> {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                String value = input.getText().toString().trim();
+                if (value.isEmpty()) {
+                    if (existing.isEmpty()) {
+                        input.setError("Vul een API-key in");
+                        return;
+                    }
+                    dialog.dismiss();
+                    return;
+                }
+                try {
+                    SecureApiKeyStore.save(this, value);
+                    updateAiStatus();
+                    Toast.makeText(this, "AI vision ingesteld", Toast.LENGTH_SHORT).show();
+                    dialog.dismiss();
+                    if (lastImageUri != null) analyzeWithAi(lastImageUri);
+                } catch (Exception e) {
+                    input.setError("Opslaan mislukt: " + e.getMessage());
+                }
+            });
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
+                SecureApiKeyStore.clear(this);
+                updateAiStatus();
+                Toast.makeText(this, "API-key verwijderd", Toast.LENGTH_SHORT).show();
+                dialog.dismiss();
+            });
+        });
+        dialog.show();
+    }
+
     private void openCamera() {
         try {
             File dir = new File(getCacheDir(), "images");
@@ -141,38 +208,87 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void showImageAndOcr(Uri uri) {
+    private void showImageAndAnalyze(Uri uri) {
+        lastImageUri = uri;
         imagePreview.setImageURI(uri);
-        txtStatus.setText("Tekst op kaart/slab herkennen…");
         editSearch.setText("");
         editGrader.setText("");
         editGrade.setText("");
         txtSlab.setText("Slab: herkennen…");
 
+        String key = SecureApiKeyStore.load(this);
+        if (!key.isEmpty()) {
+            analyzeWithAi(uri);
+        } else {
+            txtStatus.setText("AI vision is nog niet ingesteld; lokale OCR wordt als fallback gebruikt.");
+            runLocalOcrFallback(uri, "Tik bovenaan op AI voor veel betere beeldherkenning. ");
+        }
+    }
+
+    private void analyzeWithAi(Uri uri) {
+        String key = SecureApiKeyStore.load(this);
+        if (key.isEmpty()) {
+            showAiSettings();
+            return;
+        }
+        txtStatus.setText("AI vision analyseert de volledige kaartfoto…");
+        txtAiDetails.setText("GPT-5.6 Sol kijkt naar kaartnaam, set, nummer en eventuele slab…");
+
+        OpenAiVisionClient.analyze(this, uri, key, new OpenAiVisionClient.Callback() {
+            @Override
+            public void onSuccess(AiCardResult r) {
+                String query = r.searchQuery;
+                if (query.isEmpty()) {
+                    StringBuilder q = new StringBuilder(r.cardName);
+                    if (!r.setCode.isEmpty()) q.append(" ").append(r.setCode);
+                    if (!r.collectorNumber.isEmpty()) q.append(" ").append(r.collectorNumber);
+                    query = q.toString().trim();
+                }
+                editSearch.setText(query);
+                editGrader.setText(r.graded ? r.grader : "");
+                editGrade.setText(r.graded ? r.grade : "");
+                updateSlabLabelFromFields();
+                txtAiDetails.setText("AI: " + r.summary());
+
+                int confidence = (int) Math.round(r.confidence * 100.0);
+                if (r.cardName.isEmpty() || query.isEmpty()) {
+                    txtStatus.setText("AI kon de exacte kaart niet betrouwbaar bepalen. Controleer de foto of vul de zoekterm handmatig in.");
+                } else if (r.confidence < 0.70) {
+                    txtStatus.setText("AI-herkenning klaar (" + confidence + "% zekerheid). Controleer naam/nummer extra goed vóór Cardmarket.");
+                } else {
+                    txtStatus.setText("AI-herkenning klaar (" + confidence + "% zekerheid). Controleer kort en tik daarna op ‘Zoek op Cardmarket’.");
+                }
+            }
+
+            @Override
+            public void onError(String message) {
+                txtAiDetails.setText("AI vision mislukt: " + message + " — lokale OCR wordt gebruikt");
+                runLocalOcrFallback(uri, "AI vision mislukt. ");
+            }
+        });
+    }
+
+    private void runLocalOcrFallback(Uri uri, String prefix) {
         try {
             InputImage image = InputImage.fromFilePath(this, uri);
             TextRecognizer recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
             recognizer.process(image)
                     .addOnSuccessListener(result -> {
                         lastOcr = CardOcrParser.parse(result.getText());
-                        editSearch.setText(lastOcr.query);
-                        editGrader.setText(lastOcr.grader);
-                        editGrade.setText(lastOcr.grade);
+                        if (editSearch.getText().toString().trim().isEmpty()) editSearch.setText(lastOcr.query);
+                        if (editGrader.getText().toString().trim().isEmpty()) editGrader.setText(lastOcr.grader);
+                        if (editGrade.getText().toString().trim().isEmpty()) editGrade.setText(lastOcr.grade);
                         updateSlabLabelFromFields();
-
                         if (lastOcr.query.isEmpty()) {
-                            txtStatus.setText("Kaartnaam niet betrouwbaar herkend. Vul naam + kaartnummer in; grading kun je eronder corrigeren.");
-                        } else if (lastOcr.name.equalsIgnoreCase("Mint") || lastOcr.name.toUpperCase(Locale.ROOT).contains("GEM MINT")) {
-                            editSearch.setText("");
-                            txtStatus.setText("Gradingtekst is genegeerd als kaartnaam. Vul de kaartnaam handmatig in.");
+                            txtStatus.setText(prefix + "Kaartnaam niet betrouwbaar herkend; vul naam + kaartnummer handmatig in.");
                         } else {
-                            txtStatus.setText("Herkenning klaar. Controleer naam/nummer en grading; tik daarna op ‘Zoek op Cardmarket’.");
+                            txtStatus.setText(prefix + "OCR-resultaat gevonden. Controleer het zorgvuldig.");
                         }
                     })
-                    .addOnFailureListener(e -> txtStatus.setText("OCR mislukt: " + e.getMessage()))
+                    .addOnFailureListener(e -> txtStatus.setText(prefix + "OCR mislukt: " + e.getMessage()))
                     .addOnCompleteListener(task -> recognizer.close());
         } catch (Exception e) {
-            txtStatus.setText("Afbeelding kon niet worden gelezen: " + e.getMessage());
+            txtStatus.setText(prefix + "Afbeelding kon niet worden gelezen: " + e.getMessage());
         }
     }
 
@@ -209,7 +325,8 @@ public class MainActivity extends AppCompatActivity {
                     handler.postDelayed(MainActivity.this::tryOpenBestSearchResult, 800);
                 }
                 if (looksLikeProductPage(url)) {
-                    handler.postDelayed(MainActivity.this::readCurrentCardmarketPage, 1000);
+                    txtWebStatus.setText("Controleer kaart / log in → tik daarna op ✓ Juiste kaart");
+                    handler.postDelayed(MainActivity.this::injectConfirmButton, 300);
                 }
             }
         });
@@ -248,6 +365,22 @@ public class MainActivity extends AppCompatActivity {
                 "scored.sort((x,y)=>y.s-x.s);" +
                 "if(scored.length&&scored[0].s>=4){PokeScanner.onMessage('BEST_RESULT_OPENED');location.href=scored[0].a.href;}" +
                 "else PokeScanner.onMessage('NO_SAFE_AUTO_MATCH');})();";
+        webView.evaluateJavascript(js, null);
+    }
+
+    private void injectConfirmButton() {
+        if (!looksLikeProductPage(webView.getUrl())) return;
+        String js = "(function(){" +
+                "const old=document.getElementById('poke-confirm-card');if(old)old.remove();" +
+                "const b=document.createElement('button');" +
+                "b.id='poke-confirm-card';b.textContent='✓ JUISTE KAART';" +
+                "b.style.position='fixed';b.style.left='12px';b.style.right='12px';b.style.bottom='12px';" +
+                "b.style.zIndex='2147483647';b.style.padding='16px';b.style.border='0';b.style.borderRadius='10px';" +
+                "b.style.background='#d9232e';b.style.color='white';b.style.fontSize='18px';b.style.fontWeight='700';" +
+                "b.style.boxShadow='0 3px 12px rgba(0,0,0,.35)';" +
+                "b.onclick=function(){b.disabled=true;b.textContent='Kaart bevestigen…';PokeScanner.onMessage('CONFIRM_PRODUCT');};" +
+                "document.body.appendChild(b);" +
+                "})();";
         webView.evaluateJavascript(js, null);
     }
 
@@ -385,9 +518,17 @@ public class MainActivity extends AppCompatActivity {
         public void onMessage(String message) {
             runOnUiThread(() -> {
                 if ("BEST_RESULT_OPENED".equals(message)) autoOpenedProduct = true;
+                if ("CONFIRM_PRODUCT".equals(message)) {
+                    if (looksLikeProductPage(webView.getUrl())) {
+                        txtWebStatus.setText("Kaart bevestigd — gegevens uitlezen…");
+                        readCurrentCardmarketPage();
+                    } else {
+                        Toast.makeText(MainActivity.this, "Open eerst de juiste Cardmarket-productpagina.", Toast.LENGTH_LONG).show();
+                    }
+                }
                 if ("NO_SAFE_AUTO_MATCH".equals(message)) {
-                    txtWebStatus.setText("Kies de juiste kaart uit de zoekresultaten");
-                    Toast.makeText(MainActivity.this, "Meerdere mogelijke kaarten gevonden. Tik één keer op de juiste kaart; daarna wordt de pagina automatisch uitgelezen.", Toast.LENGTH_LONG).show();
+                    txtWebStatus.setText("Kies de juiste kaart; log eventueel in; bevestig daarna");
+                    Toast.makeText(MainActivity.this, "Kies de juiste kaart uit de zoekresultaten. Log zo nodig in en tik daarna onderaan op ‘✓ Juiste kaart’.", Toast.LENGTH_LONG).show();
                 }
             });
         }
